@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+    env_file:
+      - .env.production
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./app:/app/app
+    command: ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "app.main:app", "--bind", "0.0.0.0:8000"]
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  db:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_DB: fleetmaster_prod
+      POSTGRES_USER: fleetmaster
+      POSTGRES_PASSWORD: secure_password_change_this
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # Redis Cache & Broker
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  # Celery Worker
+  celery-worker:
+    build: .
+    env_file:
+      - .env.production
+    depends_on:
+      - db
+      - redis
+    command: ["celery", "-A", "app.core.tasks.celery_app", "worker", "--loglevel=info"]
+    restart: unless-stopped
+
+  # Celery Beat (Scheduler)
+  celery-beat:
+    build: .
+    env_file:
+      - .env.production
+    depends_on:
+      - db
+      - redis
+    command: ["celery", "-A", "app.core.tasks.celery_app", "beat", "--loglevel=info"]
+    restart: unless-stopped
+
+  # Flower (Celery Monitoring)
+  flower:
+    build: .
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env.production
+    depends_on:
+      - redis
+    command: ["celery", "-A", "app.core.tasks.celery_app", "flower"]
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
